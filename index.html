@@ -124,6 +124,10 @@
     position:relative; overflow:hidden;
   }
   .indicator-card:hover { transform:translateY(-3px); box-shadow:0 8px 32px rgba(198,42,107,.14); }
+  .indicator-card.dragging { opacity:.5; transform:scale(.97); box-shadow:none; cursor:grabbing; }
+  .indicator-card.drag-over { border:2px dashed var(--magenta); background:var(--warm-white); }
+  .drag-handle { cursor:grab; color:var(--muted); font-size:1rem; padding:2px 4px; border-radius:4px; transition:color .2s; }
+  .drag-handle:hover { color:var(--magenta); }
   .indicator-card::before { content:''; position:absolute; top:0; left:0; right:0; height:4px; background:linear-gradient(90deg,var(--rose),var(--magenta)); }
   .card-header { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:12px; }
   .card-title { font-size:.82rem; font-weight:600; color:var(--muted); line-height:1.3; max-width:200px; }
@@ -360,6 +364,10 @@
         <option value="down">Mejor si baja ↓</option>
         <option value="up">Mejor si sube ↑</option>
       </select>
+      <select id="newIndTipo">
+        <option value="acum">Acumulado (ingreso directo)</option>
+        <option value="count">Conteo mensual (suma automática)</option>
+      </select>
       <button class="btn btn-primary" onclick="addIndicator()">➕ Agregar</button>
     </div>
   </div>
@@ -535,6 +543,7 @@ function init() {
   buildEntryFields();
   populateCompareSelect();
   renderManage();
+  loadOrder();
   loadFromSheets();
 }
 
@@ -566,8 +575,26 @@ function applyFilters() {
 
 function getVal(y,m,id){ return data?.[y]?.[m]?.[id] ?? null; }
 
+// Para mostrar en dashboard: si es conteo mensual, suma de enero hasta mes m
+function getValDisplay(y,m,id){
+  const ind = indicators.find(i=>i.id===id);
+  if(!ind || ind.tipo !== 'count') return getVal(y,m,id);
+  // Sumar de enero a m
+  let total = 0; let hasData = false;
+  for(let i=1; i<=m; i++){
+    const v = getVal(y,i,id);
+    if(v !== null){ total += v; hasData = true; }
+  }
+  return hasData ? total : null;
+}
+
+// Para comparativo anual: siempre el dato mensual puntual
+function getValMonthly(y,m,id){
+  return getVal(y,m,id);
+}
+
 function getTrend(y,m,id){
-  const curr=getVal(y,m,id), prev=getVal(y-1,m,id);
+  const curr=getValDisplay(y,m,id), prev=getValDisplay(y-1,m,id);
   if(curr===null||prev===null) return null;
   return curr-prev;
 }
@@ -577,7 +604,7 @@ function sparkData(id,upToYear,upToMonth){
   for(let y=upToYear-1;y<=upToYear;y++){
     for(let m=1;m<=12;m++){
       if(y===upToYear&&m>upToMonth) continue;
-      const v=getVal(y,m,id); if(v!==null) pts.push({y,m,v});
+      const v=getValDisplay(y,m,id); if(v!==null) pts.push({y,m,v});
     }
   }
   return pts.slice(-8);
@@ -591,9 +618,14 @@ function renderCards(containerId, group, lblId){
   container.innerHTML='';
   const inds=indicators.filter(i=>i.group===group);
   inds.forEach(ind=>{
-    const val=getVal(activeYear,activeMonth,ind.id);
-    const prev=compareYear?getVal(compareYear,activeMonth,ind.id):null;
-    const trend=getTrend(activeYear,activeMonth,ind.id);
+    const val=getValDisplay(activeYear,activeMonth,ind.id);
+    const prev=compareYear?getValDisplay(compareYear,activeMonth,ind.id):null;
+    const trend=(()=>{
+      const curr=getValDisplay(activeYear,activeMonth,ind.id);
+      const p=getValDisplay(activeYear-1,activeMonth,ind.id);
+      if(curr===null||p===null) return null;
+      return curr-p;
+    })();
     const sp=sparkData(ind.id,activeYear,activeMonth);
     let trendHtml='<span class="trend neutral">— Sin datos previos</span>';
     if(trend!==null){
@@ -605,9 +637,18 @@ function renderCards(containerId, group, lblId){
     const prevHtml=prev!==null?`<span style="font-size:.72rem;color:var(--muted);">${compareYear}: ${prev}</span>`:'';
     const card=document.createElement('div');
     card.className='indicator-card';
+    card.setAttribute('draggable','true');
+    card.addEventListener('dragstart', e=>onDragStart(e, ind.id));
+    card.addEventListener('dragover',  e=>onDragOver(e, ind.id));
+    card.addEventListener('dragleave', e=>onDragLeave(e));
+    card.addEventListener('drop',      e=>onDrop(e, ind.id));
+    card.addEventListener('dragend',   e=>onDragEnd(e));
     card.innerHTML=`
       <div class="card-header">
-        <div class="card-title">${ind.name}</div>
+        <div style="display:flex;align-items:flex-start;gap:6px;max-width:200px;">
+          <span class="drag-handle" title="Arrastrar para reordenar">⠿</span>
+          <div class="card-title">${ind.name}</div>
+        </div>
         <div class="card-unit">${ind.unit}</div>
       </div>
       <div class="card-value">${val!==null?val:'—'}</div>
@@ -653,7 +694,7 @@ function renderSummary(){
   const ids=['rmm','tmi','ices','insp','nlm'];
   bar.innerHTML=ids.map(id=>{
     const ind=indicators.find(i=>i.id===id); if(!ind)return'';
-    const val=getVal(activeYear,activeMonth,id);
+    const val=getValDisplay(activeYear,activeMonth,id);
     return`<div class="summary-item"><div class="si-label">${ind.name.substring(0,35)}${ind.name.length>35?'…':''}</div><div class="si-value">${val!==null?val:'—'}</div><div class="si-sub">${MONTHS[activeMonth-1]} ${activeYear} · ${ind.unit}</div></div>`;
   }).join('');
 }
@@ -673,7 +714,8 @@ function renderCompare(){
   if(compareChartInst) compareChartInst.destroy();
   const pal=[{b:'#E8496A',bg:'rgba(232,73,106,.15)'},{b:'#C62A6B',bg:'rgba(198,42,107,.12)'},{b:'#D4875A',bg:'rgba(212,135,90,.12)'},{b:'#5B8DEF',bg:'rgba(91,141,239,.12)'},{b:'#4CAF7D',bg:'rgba(76,175,125,.12)'}];
   const years=[]; for(let y=START_YEAR;y<=activeYear;y++) years.push(y);
-  const datasets=years.map((y,i)=>({label:String(y),data:MONTHS.map((_,mi)=>getVal(y,mi+1,id)),borderColor:pal[i%pal.length].b,backgroundColor:pal[i%pal.length].bg,tension:.4,pointRadius:3,borderWidth:2.5,fill:false}));
+  const ind_cmp = indicators.find(i=>i.id===id);
+  const datasets=years.map((y,i)=>({label:String(y),data:MONTHS.map((_,mi)=>ind_cmp&&ind_cmp.tipo==='count'?getValMonthly(y,mi+1,id):getVal(y,mi+1,id)),borderColor:pal[i%pal.length].b,backgroundColor:pal[i%pal.length].bg,tension:.4,pointRadius:3,borderWidth:2.5,fill:false}));
   compareChartInst=new Chart(canvas,{type:'line',data:{labels:MONTHS.map(m=>m.substring(0,3)),datasets},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'top',labels:{font:{family:'DM Sans',size:11},color:'#9B6880',boxWidth:12}}},scales:{x:{grid:{color:'rgba(198,42,107,.07)'},ticks:{font:{family:'DM Sans',size:11},color:'#9B6880'}},y:{grid:{color:'rgba(198,42,107,.07)'},ticks:{font:{family:'DM Sans',size:11},color:'#9B6880'}}}}});
 }
 
@@ -685,12 +727,13 @@ function openDetail(id){
   document.getElementById('modalTitle').textContent=ind.name+' – Historial completo';
   document.getElementById('detailModal').classList.add('open');
   const rows=[]; const years=[]; for(let y=START_YEAR;y<=activeYear;y++) years.push(y);
-  years.forEach(y=>{ for(let m=1;m<=12;m++){ const v=getVal(y,m,id); if(v!==null) rows.push({y,m,v}); }});
+  const ind_modal = indicators.find(i=>i.id===id);
+  years.forEach(y=>{ for(let m=1;m<=12;m++){ const v=ind_modal&&ind_modal.tipo==='count'?getValMonthly(y,m,id):getVal(y,m,id); if(v!==null) rows.push({y,m,v}); }});
   document.getElementById('modalTable').innerHTML=rows.length?rows.map(r=>`<tr><td>${r.y}</td><td>${MONTHS[r.m-1]}</td><td><strong>${r.v}</strong> ${ind.unit}</td></tr>`).join(''):'<tr><td colspan="3" style="color:var(--muted);text-align:center;padding:20px;">Sin datos registrados</td></tr>';
   const canvas=document.getElementById('modalChart');
   if(modalChartInst) modalChartInst.destroy();
   const pal=['#E8496A','#C62A6B','#D4875A','#5B8DEF','#4CAF7D'];
-  const ds=years.map((y,i)=>({label:String(y),data:MONTHS.map((_,mi)=>getVal(y,mi+1,id)),borderColor:pal[i%pal.length],tension:.4,pointRadius:3,borderWidth:2,fill:false}));
+  const ds=years.map((y,i)=>({label:String(y),data:MONTHS.map((_,mi)=>ind_modal&&ind_modal.tipo==='count'?getValMonthly(y,mi+1,id):getVal(y,mi+1,id)),borderColor:pal[i%pal.length],tension:.4,pointRadius:3,borderWidth:2,fill:false}));
   modalChartInst=new Chart(canvas,{type:'line',data:{labels:MONTHS.map(m=>m.substring(0,3)),datasets:ds},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{font:{family:'DM Sans',size:11},color:'#9B6880'}}},scales:{x:{ticks:{font:{family:'DM Sans',size:11},color:'#9B6880'}},y:{ticks:{font:{family:'DM Sans',size:11},color:'#9B6880'}}}}});
 }
 function closeModal(){ document.getElementById('detailModal').classList.remove('open'); }
@@ -727,9 +770,10 @@ async function addIndicator(){
   const unit=document.getElementById('newIndUnit').value.trim()||'abs';
   const group=document.getElementById('newIndGroup').value;
   const dir=document.getElementById('newIndDir').value;
+  const tipo=document.getElementById('newIndTipo').value;
   if(!name){ showToast('⚠️ Ingresá el nombre del indicador'); return; }
   const id='custom_'+Date.now();
-  indicators.push({id,name,unit,group,dir});
+  indicators.push({id,name,unit,group,dir,tipo});
   await saveIndicatorsToSheets();
   document.getElementById('newIndName').value='';
   document.getElementById('newIndUnit').value='';
@@ -756,7 +800,10 @@ function renderManage(){
     return`<div style="margin-bottom:18px;"><div style="font-size:.75rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--border);">${GROUP_LABELS[g]}</div>
     ${inds.map(ind=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:9px 12px;border-radius:10px;margin-bottom:4px;background:var(--warm-white);border:1px solid var(--border);">
       <span style="font-size:.82rem;font-weight:500;">${ind.name} <em style="color:var(--muted);font-weight:400;">${ind.unit}</em></span>
-      ${ind.id.startsWith('custom_')?`<button class="btn btn-danger" style="padding:4px 12px;font-size:.72rem;" onclick="removeIndicator('${ind.id}')">Eliminar</button>`:'<span style="font-size:.7rem;color:var(--muted);">predefinido</span>'}
+      <div style="display:flex;gap:6px;align-items:center;">
+          ${ind.tipo==='count'?'<span style="font-size:.68rem;background:#FEF3C7;color:#92400E;border:1px solid #FDE68A;border-radius:6px;padding:2px 8px;">Conteo mensual</span>':''}
+          ${ind.id.startsWith('custom_')?`<button class="btn btn-danger" style="padding:4px 12px;font-size:.72rem;" onclick="removeIndicator('${ind.id}')">Eliminar</button>`:'<span style="font-size:.7rem;color:var(--muted);">predefinido</span>'}
+        </div>
     </div>`).join('')}</div>`;
   }).join('');
 }
@@ -780,6 +827,73 @@ function showToast(msg){
   const t=document.getElementById('toast');
   t.textContent=msg; t.classList.add('show');
   setTimeout(()=>t.classList.remove('show'),3500);
+}
+
+// ══════════════════════════════════════
+//  ORDEN DE INDICADORES
+// ══════════════════════════════════════
+function loadOrder() {
+  try {
+    const saved = localStorage.getItem('dimpyna_order');
+    if(saved) {
+      const order = JSON.parse(saved);
+      // Reordenar indicators según el orden guardado
+      const ordered = [];
+      order.forEach(id => {
+        const ind = indicators.find(i=>i.id===id);
+        if(ind) ordered.push(ind);
+      });
+      // Agregar los que no están en el orden guardado (nuevos)
+      indicators.forEach(ind => {
+        if(!ordered.find(i=>i.id===ind.id)) ordered.push(ind);
+      });
+      indicators = ordered;
+    }
+  } catch(e){}
+}
+
+function saveOrder() {
+  localStorage.setItem('dimpyna_order', JSON.stringify(indicators.map(i=>i.id)));
+}
+
+let dragSrcId = null;
+
+function onDragStart(e, id) {
+  dragSrcId = id;
+  e.currentTarget.closest('.indicator-card').classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
+}
+
+function onDragOver(e, id) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  document.querySelectorAll('.indicator-card').forEach(c=>c.classList.remove('drag-over'));
+  const card = e.currentTarget.closest('.indicator-card');
+  if(card) card.classList.add('drag-over');
+}
+
+function onDragLeave(e) {
+  const card = e.currentTarget.closest('.indicator-card');
+  if(card) card.classList.remove('drag-over');
+}
+
+function onDrop(e, targetId) {
+  e.preventDefault();
+  document.querySelectorAll('.indicator-card').forEach(c=>{ c.classList.remove('drag-over'); c.classList.remove('dragging'); });
+  if(!dragSrcId || dragSrcId === targetId) return;
+  const srcIdx = indicators.findIndex(i=>i.id===dragSrcId);
+  const tgtIdx = indicators.findIndex(i=>i.id===targetId);
+  if(srcIdx===-1||tgtIdx===-1) return;
+  const moved = indicators.splice(srcIdx,1)[0];
+  indicators.splice(tgtIdx,0,moved);
+  saveOrder();
+  renderDashboard();
+  renderNacer();
+  showToast('✅ Orden guardado');
+}
+
+function onDragEnd(e) {
+  document.querySelectorAll('.indicator-card').forEach(c=>{ c.classList.remove('dragging'); c.classList.remove('drag-over'); });
 }
 
 // ══════════════════════════════════════
