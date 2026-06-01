@@ -469,7 +469,9 @@ async function loadFromSheets() {
     populateCompareSelect();
     renderManage();
     showToast('✅ Datos sincronizados correctamente');
-    loadEntryValues();
+    // Recargar campos si estamos en la pestaña de registro
+    const entryPane = document.getElementById('pane-entry');
+    if(entryPane && entryPane.style.display !== 'none') loadEntryValues();
   } catch(err) {
     setSyncStatus('err','Error al conectar con Google Sheets');
     showToast('⚠️ No se pudo conectar: ' + err.message);
@@ -836,6 +838,7 @@ function showTab(name){
   });
   if(name==='compare') renderCompare();
   if(name==='manage') renderManage();
+  if(name==='entry') loadEntryValues();
 }
 
 // ══════════════════════════════════════
