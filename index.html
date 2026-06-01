@@ -323,15 +323,15 @@
     <div class="section-header" style="margin-bottom:8px;">
       <div class="section-dot"></div><h2>Registrar datos acumulados</h2>
     </div>
-    <p class="note">📌 Todos los valores son <strong>acumulados desde enero</strong> hasta el mes seleccionado. Los datos se guardan directamente en Google Sheets.</p>
+    <p class="note">📌 Todos los valores son <strong>acumulados desde enero</strong> hasta el mes seleccionado. Al cambiar el mes, se cargan automáticamente los datos ya guardados (fondo verde). Los campos vacíos no sobreescriben datos existentes.</p>
     <div style="display:flex;gap:12px;margin-top:16px;flex-wrap:wrap;align-items:center;">
       <div style="display:flex;flex-direction:column;gap:5px;">
         <label style="font-size:.78rem;font-weight:600;color:var(--muted);">Año</label>
-        <select id="entryYear" style="border:1.5px solid var(--border);border-radius:10px;padding:8px 14px;font-family:'DM Sans',sans-serif;font-size:.85rem;background:var(--warm-white);outline:none;"></select>
+        <select id="entryYear" onchange="loadEntryValues()" style="border:1.5px solid var(--border);border-radius:10px;padding:8px 14px;font-family:'DM Sans',sans-serif;font-size:.85rem;background:var(--warm-white);outline:none;"></select>
       </div>
       <div style="display:flex;flex-direction:column;gap:5px;">
         <label style="font-size:.78rem;font-weight:600;color:var(--muted);">Mes</label>
-        <select id="entryMonth" style="border:1.5px solid var(--border);border-radius:10px;padding:8px 14px;font-family:'DM Sans',sans-serif;font-size:.85rem;background:var(--warm-white);outline:none;">
+        <select id="entryMonth" onchange="loadEntryValues()" style="border:1.5px solid var(--border);border-radius:10px;padding:8px 14px;font-family:'DM Sans',sans-serif;font-size:.85rem;background:var(--warm-white);outline:none;">
           <option value="1">Enero</option><option value="2">Febrero</option><option value="3">Marzo</option>
           <option value="4">Abril</option><option value="5">Mayo</option><option value="6">Junio</option>
           <option value="7">Julio</option><option value="8">Agosto</option><option value="9">Septiembre</option>
@@ -469,6 +469,7 @@ async function loadFromSheets() {
     populateCompareSelect();
     renderManage();
     showToast('✅ Datos sincronizados correctamente');
+    loadEntryValues();
   } catch(err) {
     setSyncStatus('err','Error al conectar con Google Sheets');
     showToast('⚠️ No se pudo conectar: ' + err.message);
@@ -745,6 +746,19 @@ document.getElementById('detailModal').addEventListener('click',function(e){ if(
 function buildEntryFields(){
   const el=document.getElementById('entryFields'); if(!el)return;
   el.innerHTML=indicators.map(ind=>`<div class="field"><label>${ind.name} <em style="font-weight:400;color:var(--muted);">(${ind.unit})</em></label><input type="number" step="any" id="ef_${ind.id}" placeholder="Valor acumulado" /></div>`).join('');
+  loadEntryValues();
+}
+
+function loadEntryValues(){
+  const year  = +document.getElementById('entryYear').value;
+  const month = +document.getElementById('entryMonth').value;
+  indicators.forEach(ind=>{
+    const inp = document.getElementById('ef_'+ind.id);
+    if(!inp) return;
+    const v = getVal(year, month, ind.id);
+    if(v !== null){ inp.value = v; inp.style.background='#f0fdf4'; inp.style.borderColor='#4CAF7D'; }
+    else { inp.value=''; inp.style.background=''; inp.style.borderColor=''; }
+  });
 }
 
 async function saveEntry(){
@@ -753,11 +767,15 @@ async function saveEntry(){
   const values = {};
   indicators.forEach(ind=>{
     const inp=document.getElementById('ef_'+ind.id);
-    if(inp&&inp.value!=='') values[ind.id]=parseFloat(inp.value);
+    // Solo guardar si el campo tiene valor Y fue modificado por el usuario
+    if(inp && inp.value !== '' && !isNaN(parseFloat(inp.value))) {
+      values[ind.id]=parseFloat(inp.value);
+    }
   });
   if(Object.keys(values).length===0){ showToast('⚠️ No ingresaste ningún valor'); return; }
   await saveToSheets(year, month, values);
   showToast(`✅ ${Object.keys(values).length} indicadores guardados – ${MONTHS[month-1]} ${year}`);
+  loadEntryValues(); // recargar para mostrar en verde los guardados
 }
 
 function clearEntry(){ indicators.forEach(ind=>{ const e=document.getElementById('ef_'+ind.id); if(e)e.value=''; }); }
